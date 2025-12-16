@@ -126,7 +126,7 @@ async function main() {
   await hsPatch(`https://api.hubapi.com/crm/v3/objects/deals/${dealId}`, {
     properties: {
       pdf_url: pdfUrl,
-      pdf_statut: "GENERE",
+      pdf_statut: "Généré",
     },
   });
 
@@ -140,7 +140,7 @@ main().catch(async (e) => {
   // Best-effort: marquer le deal en ECHEC
   try {
     await hsPatch(`https://api.hubapi.com/crm/v3/objects/deals/${String(DEAL_ID)}`, {
-      properties: { pdf_statut: "ECHEC" },
+      properties: { pdf_statut: "Echec" },
     });
   } catch {}
 
