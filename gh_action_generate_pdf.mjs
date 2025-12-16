@@ -62,18 +62,24 @@ async function htmlToPdfBuffer(html) {
 async function uploadToFiles(pdfBuffer, filename) {
   const form = new FormData();
 
-  // Fichier PDF
+  // 1) Fichier
   form.append(
     "file",
     new Blob([pdfBuffer], { type: "application/pdf" }),
     filename
   );
 
-  // Dossier HubSpot (doit exister)
-  form.append("folderPath", "/Generate PDF");
+  // 2) Options (OBLIGATOIRE dans ton cas)
+  form.append(
+    "options",
+    JSON.stringify({
+      access: "PUBLIC_NOT_INDEXABLE",
+      overwrite: true
+    })
+  );
 
-  // Accès (recommandé)
-  form.append("access", "PUBLIC_NOT_INDEXABLE");
+  // 3) Dossier cible (ton dossier HubSpot)
+  form.append("folderPath", "/Generate PDF");
 
   const r = await fetch("https://api.hubapi.com/files/v3/files", {
     method: "POST",
@@ -92,6 +98,7 @@ async function uploadToFiles(pdfBuffer, filename) {
 
   return pdfUrl;
 }
+
 
 // --- Main ---
 async function main() {
