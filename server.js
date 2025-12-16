@@ -1,96 +1,120 @@
-export function buildHtmlFromBundle(bundle) {
-  const deal = bundle?.deal?.properties || {};
-  const contact = bundle?.contact?.properties || {};
-  const company = bundle?.company?.properties || {};
-  const items = Array.isArray(bundle?.line_items) ? bundle.line_items : [];
+import express from "express";
+import fetch from "node-fetch";
+import FormData from "form-data";
+import puppeteer from "puppeteer";
+import { buildHtmlFromBundle } from "./renderPdf.js";
 
-  const safe = (v) => (v === null || v === undefined || v === "" ? "-" : String(v));
+const app = express();
+app.use(express.json({ limit: "2mb" }));
 
-  const itemsHtml = items.length
-    ? `<table style="width:100%; border-collapse:collapse; margin-top:8px;">
-        <thead>
-          <tr>
-            <th style="text-align:left; border:1px solid #ddd; padding:8px;">Produit</th>
-            <th style="text-align:right; border:1px solid #ddd; padding:8px;">Qté</th>
-            <th style="text-align:right; border:1px solid #ddd; padding:8px;">Prix</th>
-            <th style="text-align:right; border:1px solid #ddd; padding:8px;">Montant</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${items.map(li => {
-            const p = li?.properties || {};
-            return `<tr>
-              <td style="border:1px solid #ddd; padding:8px;">${safe(p.name)}</td>
-              <td style="border:1px solid #ddd; padding:8px; text-align:right;">${safe(p.quantity)}</td>
-              <td style="border:1px solid #ddd; padding:8px; text-align:right;">${safe(p.price)}</td>
-              <td style="border:1px solid #ddd; padding:8px; text-align:right;">${safe(p.amount)}</td>
-            </tr>`;
-          }).join("")}
-        </tbody>
-      </table>`
-    : `<p style="color:#666; margin:0;">Aucune ligne de produit associée.</p>`;
+const {
+  HUBSPOT_TOKEN,
+  ENDPOINT_API_KEY, // clé simple pour empêcher des appels publics
+  HUBSPOT_FILES_FOLDER_ID // optionnel
+} = process.env;
 
-  return `<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8" />
-  <title>Document PDF</title>
-  <style>
-    @page { margin: 18mm; }
-    body { font-family: Arial, sans-serif; color:#111; }
-    h1 { margin: 0 0 6px 0; font-size: 22px; }
-    h2 { margin: 18px 0 8px 0; font-size: 16px; }
-    .muted { color:#666; font-size: 12px; }
-    .card { border:1px solid #ddd; border-radius:10px; padding:14px; }
-    .grid { display:flex; gap:14px; }
-    .col { flex:1; }
-    .kv p { margin: 4px 0; }
-    .hr { height:1px; background:#eee; margin:14px 0; }
-  </style>
-</head>
-<body>
-  <h1>Document – Transaction</h1>
-  <p class="muted">Généré automatiquement depuis HubSpot</p>
-
-  <div class="card">
-    <h2>Transaction</h2>
-    <div class="kv">
-      <p><strong>Nom :</strong> ${safe(deal.dealname)}</p>
-      <p><strong>Montant :</strong> ${safe(deal.amount)}</p>
-      <p><strong>Date de clôture :</strong> ${safe(deal.closedate)}</p>
-      <p><strong>Pipeline / Stage :</strong> ${safe(deal.pipeline)} / ${safe(deal.dealstage)}</p>
-    </div>
-
-    <div class="hr"></div>
-
-    <div class="grid">
-      <div class="col">
-        <h2>Contact</h2>
-        <div class="kv">
-          <p><strong>Nom :</strong> ${safe(contact.firstname)} ${safe(contact.lastname)}</p>
-          <p><strong>Email :</strong> ${safe(contact.email)}</p>
-          <p><strong>Téléphone :</strong> ${safe(contact.phone)}</p>
-        </div>
-      </div>
-      <div class="col">
-        <h2>Entreprise</h2>
-        <div class="kv">
-          <p><strong>Nom :</strong> ${safe(company.name)}</p>
-          <p><strong>Domaine :</strong> ${safe(company.domain)}</p>
-          <p><strong>Ville :</strong> ${safe(company.city)}</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="hr"></div>
-
-    <h2>Produits</h2>
-    ${itemsHtml}
-  </div>
-
-  <p class="muted" style="margin-top:12px;">
-    Horodatage: ${new Date().toISOString()}
-  </p>
-</body>
-</html>`;
+function assertEnv() {
+  if (!HUBSPOT_TOKEN) throw new Error("Missing env HUBSPOT_TOKEN");
+  if (!ENDPOINT_API_KEY) throw new Error("Missing env ENDPOINT_API_KEY");
 }
+
+async function getDealPdfBundle(dealId) {
+  const url = `https://api.hubapi.com/crm/v3/objects/deals/${dealId}?properties=pdf_donnees_json`;
+  const r = await fetch(url, {
+    headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` }
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`HubSpot deal fetch failed: ${r.status} ${t}`);
+  }
+  const json = await r.json();
+  const raw = json?.properties?.pdf_donnees_json;
+  if (!raw) throw new Error("Deal has empty pdf_donnees_json");
+  return JSON.parse(raw);
+}
+
+async function htmlToPdfBuffer(html) {
+  const browser = await puppeteer.launch({
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    const pdf = await page.pdf({
+      format: "A4",
+      printBackground: true
+    });
+    return pdf;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function uploadToHubSpotFiles({ pdfBuffer, filename }) {
+  // Files API v3 multipart
+  const form = new FormData();
+  form.append("file", pdfBuffer, {
+    filename,
+    contentType: "application/pdf"
+  });
+
+  // Options: access/public & folder
+  form.append("options", JSON.stringify({ access: "PUBLIC_NOT_INDEXABLE" }));
+  if (HUBSPOT_FILES_FOLDER_ID) {
+    form.append("folderId", String(HUBSPOT_FILES_FOLDER_ID));
+  }
+
+  const url = "https://api.hubapi.com/files/v3/files";
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+      ...form.getHeaders()
+    },
+    body: form
+  });
+
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`HubSpot file upload failed: ${r.status} ${t}`);
+  }
+
+  const out = await r.json();
+  // selon retours HubSpot, l’URL peut être "url" ou "friendlyUrl"
+  const fileUrl = out?.url || out?.friendlyUrl || out?.friendly_url;
+  if (!fileUrl) {
+    throw new Error(`Upload ok but no file URL in response: ${JSON.stringify(out)}`);
+  }
+  return fileUrl;
+}
+
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+app.post("/generate-pdf", async (req, res) => {
+  try {
+    assertEnv();
+
+    // Simple auth
+    const key = req.header("x-api-key");
+    if (key !== ENDPOINT_API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const dealId = String(req.body?.dealId || "").trim();
+    if (!dealId) return res.status(400).json({ error: "Missing dealId" });
+
+    const bundle = await getDealPdfBundle(dealId);
+    const html = buildHtmlFromBundle(bundle);
+    const pdfBuffer = await htmlToPdfBuffer(html);
+
+    const filename = `deal_${dealId}_document.pdf`;
+    const pdfUrl = await uploadToHubSpotFiles({ pdfBuffer, filename });
+
+    return res.json({ dealId, pdfUrl });
+  } catch (e) {
+    return res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`PDF endpoint listening on ${port}`));
