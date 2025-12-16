@@ -51,7 +51,14 @@ async function uploadToFiles(pdfBuffer, filename) {
     filename
   );
 
-  form.append("options", JSON.stringify({ access: "PUBLIC_NOT_INDEXABLE" }));
+  form.append(
+  "options",
+  JSON.stringify({
+    access: "PUBLIC_NOT_INDEXABLE",
+    folderPath: "/pdf-generated"
+  })
+);
+
 
   const r = await fetch("https://api.hubapi.com/files/v3/files", {
     method: "POST",
