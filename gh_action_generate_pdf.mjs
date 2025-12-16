@@ -1,4 +1,3 @@
-
 import puppeteer from "puppeteer";
 import { buildHtmlFromBundle } from "./renderPdf.js";
 
@@ -8,8 +7,19 @@ const DEAL_ID = process.env.DEAL_ID;
 if (!HUBSPOT_TOKEN) throw new Error("Missing HUBSPOT_TOKEN secret");
 if (!DEAL_ID) throw new Error("Missing DEAL_ID input");
 
+// --- Helpers ---
+function safeFilename(s) {
+  return String(s || "")
+    .trim()
+    .replace(/[\/\\?%*:|"<>]/g, "-") // caractères interdits
+    .replace(/\s+/g, " ")
+    .slice(0, 120);
+}
+
 async function hsGet(url) {
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } });
+  const r = await fetch(url, {
+    headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` },
+  });
   if (!r.ok) throw new Error(`HubSpot GET failed ${r.status}: ${await r.text()}`);
   return r.json();
 }
@@ -17,7 +27,10 @@ async function hsGet(url) {
 async function hsPatch(url, body) {
   const r = await fetch(url, {
     method: "PATCH",
-    headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}`, "content-type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+      "content-type": "application/json",
+    },
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`HubSpot PATCH failed ${r.status}: ${await r.text()}`);
@@ -25,14 +38,18 @@ async function hsPatch(url, body) {
 }
 
 async function getBundle(dealId) {
-  const deal = await hsGet(`https://api.hubapi.com/crm/v3/objects/deals/${dealId}?properties=pdf_donnees_json`);
+  const deal = await hsGet(
+    `https://api.hubapi.com/crm/v3/objects/deals/${dealId}?properties=pdf_donnees_json`
+  );
   const raw = deal?.properties?.pdf_donnees_json;
   if (!raw) throw new Error("Empty pdf_donnees_json on deal");
   return JSON.parse(raw);
 }
 
 async function htmlToPdfBuffer(html) {
-  const browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  const browser = await puppeteer.launch({
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
@@ -45,20 +62,18 @@ async function htmlToPdfBuffer(html) {
 async function uploadToFiles(pdfBuffer, filename) {
   const form = new FormData();
 
+  // Fichier PDF
   form.append(
     "file",
     new Blob([pdfBuffer], { type: "application/pdf" }),
     filename
   );
 
-  form.append(
-  "options",
-  JSON.stringify({
-    access: "PUBLIC_NOT_INDEXABLE",
-    folderPath: "/pdf-generated"
-  })
-);
+  // Dossier HubSpot (doit exister)
+  form.append("folderPath", "/Generate PDF");
 
+  // Accès (recommandé)
+  form.append("access", "PUBLIC_NOT_INDEXABLE");
 
   const r = await fetch("https://api.hubapi.com/files/v3/files", {
     method: "POST",
@@ -67,20 +82,41 @@ async function uploadToFiles(pdfBuffer, filename) {
   });
 
   if (!r.ok) throw new Error(`Upload failed ${r.status}: ${await r.text()}`);
+
   const out = await r.json();
-  return out.url || out.friendlyUrl || out.friendly_url;
+  const pdfUrl = out.url || out.friendlyUrl || out.friendly_url;
+
+  if (!pdfUrl) {
+    throw new Error(`Upload ok but no file URL in response: ${JSON.stringify(out)}`);
+  }
+
+  return pdfUrl;
 }
 
-
+// --- Main ---
 async function main() {
-  const bundle = await getBundle(DEAL_ID);
+  const dealId = String(DEAL_ID);
+
+  // 1) Lire le bundle consolidé (json)
+  const bundle = await getBundle(dealId);
+
+  // 2) Construire HTML -> PDF
   const html = buildHtmlFromBundle(bundle);
   const pdf = await htmlToPdfBuffer(html);
 
-  const pdfUrl = await uploadToFiles(pdf, `deal_${DEAL_ID}_document.pdf`);
-  if (!pdfUrl) throw new Error("No pdfUrl returned by files API");
+  // 3) Nommer le fichier: Deal + Contact
+  const dealName = bundle?.deal?.properties?.dealname || `Deal_${dealId}`;
+  const first = bundle?.contact?.properties?.firstname || "";
+  const last = bundle?.contact?.properties?.lastname || "";
+  const contactName = `${first} ${last}`.trim() || "Contact_inconnu";
 
-  await hsPatch(`https://api.hubapi.com/crm/v3/objects/deals/${DEAL_ID}`, {
+  const filename = `${safeFilename(dealName)} - ${safeFilename(contactName)}.pdf`;
+
+  // 4) Upload HubSpot Files dans /Generate PDF
+  const pdfUrl = await uploadToFiles(pdf, filename);
+
+  // 5) Mettre à jour le deal
+  await hsPatch(`https://api.hubapi.com/crm/v3/objects/deals/${dealId}`, {
     properties: {
       pdf_url: pdfUrl,
       pdf_statut: "GENERE",
@@ -88,14 +124,19 @@ async function main() {
   });
 
   console.log("OK pdfUrl:", pdfUrl);
+  console.log("Filename:", filename);
 }
 
 main().catch(async (e) => {
   console.error(e);
+
+  // Best-effort: marquer le deal en ECHEC
   try {
-    await hsPatch(`https://api.hubapi.com/crm/v3/objects/deals/${DEAL_ID}`, {
+    await hsPatch(`https://api.hubapi.com/crm/v3/objects/deals/${String(DEAL_ID)}`, {
       properties: { pdf_statut: "ECHEC" },
     });
   } catch {}
+
   process.exit(1);
 });
+
