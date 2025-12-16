@@ -1,5 +1,4 @@
-import fetch from "node-fetch";
-import FormData from "form-data";
+
 import puppeteer from "puppeteer";
 import { buildHtmlFromBundle } from "./renderPdf.js";
 
@@ -45,12 +44,18 @@ async function htmlToPdfBuffer(html) {
 
 async function uploadToFiles(pdfBuffer, filename) {
   const form = new FormData();
-  form.append("file", pdfBuffer, { filename, contentType: "application/pdf" });
+
+  form.append(
+    "file",
+    new Blob([pdfBuffer], { type: "application/pdf" }),
+    filename
+  );
+
   form.append("options", JSON.stringify({ access: "PUBLIC_NOT_INDEXABLE" }));
 
   const r = await fetch("https://api.hubapi.com/files/v3/files", {
     method: "POST",
-    headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}`, ...form.getHeaders() },
+    headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` },
     body: form,
   });
 
@@ -58,6 +63,7 @@ async function uploadToFiles(pdfBuffer, filename) {
   const out = await r.json();
   return out.url || out.friendlyUrl || out.friendly_url;
 }
+
 
 async function main() {
   const bundle = await getBundle(DEAL_ID);
