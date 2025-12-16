@@ -1,0 +1,30 @@
+name: Generate PDF and upload to HubSpot
+
+on:
+  workflow_dispatch:
+    inputs:
+      dealId:
+        description: "HubSpot Deal ID"
+        required: true
+        type: string
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: npm install
+
+      - name: Run generator
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          DEAL_ID: ${{ inputs.dealId }}
+        run: node gh_action_generate_pdf.mjs
